@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-18
+
 ### Added
 
 - Devialet Phantom speakers over their local IP control API, without any
@@ -54,3 +56,6 @@ the notes of the version's GitHub Release.
   network or from `/data` is refused: the speaker table has no prototype.
 - More invisible characters are removed from the texts (bidi marks U+200E,
   U+200F, U+061C, and the separators U+2028, U+2029).
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-devialet/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-devialet/releases/tag/v0.1.1

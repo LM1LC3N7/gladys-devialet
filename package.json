@@ -1,6 +1,6 @@
 {
   "name": "gladys-devialet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for Devialet Phantom speakers (volume, mute, source, playback, title, standby), over their local IP control API. Unofficial, not affiliated with Devialet.",
   "type": "module",
