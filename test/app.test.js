@@ -517,6 +517,85 @@ test('the Source options of the created device are never dropped', async (t) => 
   assert.ok(values.includes('spotifyconnect'));
 });
 
+test('the identity is read again at most every 10 minutes, even when the sources fail', async (t) => {
+  const clock = { now: 1_000_000 };
+  const { speaker, gladys, app } = await setup(t, { clock });
+  await createSpeaker(gladys);
+  speaker.state.failSources = true;
+  const describes = () =>
+    speaker.state.requests.filter((r) => r.path.endsWith('/devices/current')).length;
+  const start = describes();
+  for (let i = 0; i < 5; i += 1) {
+    clock.now += 10_000;
+    await app.tick();
+  }
+  assert.equal(describes(), start, 'not at every round');
+  clock.now += TIMINGS.sourcesRefresh;
+  await app.tick();
+  assert.equal(describes(), start + 1);
+});
+
+test('a created speaker of a stereo pair changes the device shown', async (t) => {
+  const left = await startFakeSpeaker();
+  const right = await startFakeSpeaker({
+    serial: 'R0000000002',
+    deviceId: 'aaaaaaaa-1111-4111-8111-000000000002',
+    role: 'FrontRight',
+    leader: false,
+  });
+  t.after(() => Promise.all([left.close(), right.close()]));
+  const { gladys } = await setup(t, {
+    config: { addresses: `127.0.0.1:${right.port}, 127.0.0.1:${left.port}` },
+  });
+  const publications = () => gladys.fake.bodies('POST', '/discovered_device').length;
+  const count = publications();
+  // The right speaker is created (by an older version, say): it is now shown.
+  const device = { ...gladys.fake.discoveredDevices[0], external_id: id(undefined, 'R0000000002') };
+  device.features = device.features.map((f) => ({
+    ...f,
+    external_id: f.external_id.replace(SERIAL, 'R0000000002'),
+  }));
+  await gladys.fake.deviceCreated(device);
+  assert.ok(publications() > count, 'published again');
+  const last = gladys.fake.bodies('POST', '/discovered_device').at(-1).devices;
+  assert.deepEqual(
+    last.map((d) => d.external_id),
+    [id(undefined, 'R0000000002')],
+  );
+});
+
+test('the automatic search stops with stop()', async (t) => {
+  const clock = { now: 1_000_000 };
+  const { speaker, gladys, app } = await setup(t, { clock, config: { addresses: '' } });
+  const found = [{ name: 'x', host: null, addresses: ['127.0.0.1'], port: speaker.port, txt: [] }];
+  app.gladys.scanNetwork = async () => found;
+  await gladys.fake.action('find_speakers');
+  await createSpeaker(gladys);
+  app.data.speakers[SERIAL].host = '';
+  let release;
+  let searches = 0;
+  app.gladys.scanNetwork = async () => {
+    searches += 1;
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    return found;
+  };
+  clock.now += 10_000;
+  await app.tick();
+  assert.equal(searches, 1);
+  const publications = () => gladys.fake.bodies('POST', '/discovered_device').length;
+  const published = publications();
+  await app.stop();
+  release();
+  await settle();
+  assert.equal(publications(), published, 'nothing published after stop');
+  assert.equal(app.data.speakers[SERIAL].host, '');
+  clock.now += 20 * 60_000;
+  app.autoScan();
+  assert.equal(searches, 1, 'no automatic search once stopped');
+});
+
 test('one search at a time', async (t) => {
   const { app } = await setup(t, { config: { addresses: '' } });
   let calls = 0;

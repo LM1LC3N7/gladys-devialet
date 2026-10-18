@@ -42,6 +42,11 @@ the notes of the version's GitHub Release.
   intervals; the identity and the system name are read again every 10
   minutes; the Source options of a created device are never dropped.
 - One search at a time, its answers asked 4 at a time within 35 seconds.
+- The identity and the system name have their own 10-minute timestamp (a
+  failing source list no longer makes them read at every round); the devices
+  are published again when the set of created speakers changes (the member
+  shown for a stereo pair follows it); the automatic search stops with the
+  integration and publishes nothing after it.
 
 ### Security
 

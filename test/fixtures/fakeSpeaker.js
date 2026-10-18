@@ -83,6 +83,9 @@ export async function startFakeSpeaker(options = {}) {
         case `GET ${BASE}/systems/current`:
           return json(res, 200, { systemId: state.systemId, systemName: state.systemName });
         case `GET ${BASE}/groups/current/sources`:
+          if (state.failSources) {
+            return error(res, 'Busy');
+          }
           return json(res, 200, { sources: state.sources });
         case `GET ${BASE}/groups/current/sources/current`: {
           if (state.idle) {

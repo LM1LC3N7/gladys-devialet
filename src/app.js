@@ -111,6 +111,8 @@ export class DevialetApp {
     /** The search in progress (one at a time), and when the last automatic one ran. */
     this.scanning = undefined;
     this.lastAutoScan = -Infinity;
+    /** serial -> when `devices/current` and the system name were last read */
+    this.identityReadAt = new Map();
     this.backgroundTimers = new Set();
     this.generation = 0;
     this.pollTimer = undefined;
@@ -345,11 +347,18 @@ export class DevialetApp {
     const bySerial = new Map(
       this.speakers.map((s) => [this.gladys.externalIds(DEVICE_TYPE, s.serial).device, s.serial]),
     );
-    this.created = new Set(
+    const created = new Set(
       (Array.isArray(devices) ? devices : [])
         .map((d) => bySerial.get(d.external_id))
         .filter(Boolean),
     );
+    const changed =
+      created.size !== this.created.size || [...created].some((s) => !this.created.has(s));
+    this.created = created;
+    if (changed) {
+      // Which member of a stereo pair is shown depends on what is created.
+      await this.publishCreatedChange();
+    }
   }
 
   /**
@@ -506,6 +515,9 @@ export class DevialetApp {
 
   async runScan() {
     const deadline = this.now() + this.timings.scanBudget;
+    // A stop() during the search ends it: no speaker asked, nothing published after.
+    const generation = this.generation;
+    const stopped = () => generation !== this.generation;
     let results = [];
     try {
       results = await this.gladys.scanNetwork('mdns', {
@@ -534,7 +546,7 @@ export class DevialetApp {
     }
     await mapLimit(candidates, this.timings.scanConcurrency, async (hosts) => {
       for (const address of hosts) {
-        if (this.now() >= deadline) {
+        if (this.now() >= deadline || stopped()) {
           return;
         }
         try {
@@ -545,8 +557,13 @@ export class DevialetApp {
         }
       }
     });
+    if (stopped()) {
+      return this.publishedSpeakers();
+    }
     await this.probeAddresses(true);
-    await this.publishDevices();
+    if (!stopped()) {
+      await this.publishDevices();
+    }
     return this.publishedSpeakers();
   }
 
@@ -563,10 +580,15 @@ export class DevialetApp {
     if (this.now() - this.lastAutoScan < this.timings.autoScanInterval) {
       return;
     }
+    // In the background: the polling of the other speakers does not wait for
+    // it. Nothing is started, and nothing follows, once stop() has run.
+    if (!this.started) {
+      return;
+    }
     this.lastAutoScan = this.now();
-    // In the background: the polling of the other speakers does not wait for it.
+    const generation = this.generation;
     this.scan()
-      .then(() => this.updateStatus())
+      .then(() => (generation === this.generation ? this.updateStatus() : undefined))
       .catch((err) => this.logger.warn(`Automatic search failed: ${err.message}`));
   }
 
@@ -681,11 +703,15 @@ export class DevialetApp {
       return { on: false };
     }
     try {
-      // Who answers, and the system name, are read again with the source list
-      // (every `sourcesRefresh`): a renamed system or a re-paired speaker shows.
-      const cached = this.sourceLists.get(speaker.serial);
+      // Who answers, and the system name, are read again every
+      // `sourcesRefresh` (their own timestamp: a failing source list does not
+      // make them read at every round): a renamed system or a re-paired
+      // speaker shows.
+      const identityAt = this.identityReadAt.get(speaker.serial);
       const identityDue =
-        verify || !cached || this.now() - cached.at >= this.timings.sourcesRefresh;
+        verify ||
+        identityAt === undefined ||
+        this.now() - identityAt >= this.timings.sourcesRefresh;
       if (identityDue) {
         const description = await client.describe();
         if (description.serial !== speaker.serial) {
@@ -700,6 +726,7 @@ export class DevialetApp {
           return { on: false };
         }
         const systemName = await this.optional(() => client.systemName());
+        this.identityReadAt.set(speaker.serial, this.now());
         const before = deviceName(speaker);
         this.remember(
           { ...description, systemName: systemName ?? speaker.systemName },
@@ -988,17 +1015,31 @@ export class DevialetApp {
     if (!speaker) {
       return;
     }
+    const isNew = !this.created.has(speaker.serial);
     this.created.add(speaker.serial);
     this.readings.delete(speaker.serial);
+    if (isNew) {
+      await this.publishCreatedChange();
+    }
     await this.readState(speaker);
     await this.updateStatus();
+  }
+
+  /** `created` changed: the member shown for a stereo pair may change with it. */
+  publishCreatedChange() {
+    return this.publishDevices().catch((err) =>
+      this.logger.warn(`Could not publish the devices: ${err.message}`),
+    );
   }
 
   async deviceDeleted(device) {
     const speaker = this.speakerOfDevice(device);
     if (speaker) {
-      this.created.delete(speaker.serial);
+      const was = this.created.delete(speaker.serial);
       this.readings.delete(speaker.serial);
+      if (was) {
+        await this.publishCreatedChange();
+      }
       await this.updateStatus();
     }
   }

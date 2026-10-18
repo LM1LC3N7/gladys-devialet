@@ -155,8 +155,13 @@ up to date at the end of every milestone.
   typed addresses after it, a search ends within the 60 s of the button.
 - Reads spaced out on HTTP, API and unreadable answers too (typed addresses
   and speakers), like no answer, without publishing power 0.
-- Identity (`devices/current`) and system name read again with the source
-  list, every 10 minutes; a new name republishes the device.
+- Identity (`devices/current`) and system name read again every 10 minutes,
+  on their own timestamp (`identityReadAt`, independent of the source list);
+  a new name republishes the device.
+- The devices are published again whenever the set of created speakers
+  changes (refreshCreated, device created, device deleted).
+- A search checks the generation: after stop() it identifies nothing more and
+  publishes nothing; no automatic search starts while stopped.
 - Source options: merged with the `supported_options` of the created device
   (`gladys.devices`) before every publication.
 - Unprintable characters are given as code point ranges (C0, DEL, C1,
