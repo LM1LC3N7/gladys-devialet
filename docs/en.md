@@ -1,61 +1,116 @@
-# Demo Devices Template
+# Devialet
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Control your **Devialet Phantom** speakers from Gladys, on your local network,
+without any cloud: volume, mute, source, play, pause, next, previous, the
+title playing, and standby. The integration uses the IP control API the
+speakers expose on your network (plain HTTP), the one the Home Assistant
+Devialet integration uses.
+
+> **Unofficial integration, not affiliated with Devialet.** This first
+> milestone was written and tested against a simulated speaker only: it has
+> **never been tested with a real speaker**. Your feedback is welcome.
+
+## Prepare the speakers
+
+1. Set the speakers up with the Devialet app as usual (Wi-Fi or Ethernet).
+2. Give each speaker a **fixed IP address** in your router (reserved DHCP
+   lease). The address is shown in the Devialet app, or in your router's list
+   of devices.
+3. Gladys must reach the speakers on the network (same network, port 80).
+
+## Add a speaker
+
+- **By its address** (recommended): type the IP address in "IP addresses of
+  the speakers" (several addresses separated by commas) and save. For a
+  **stereo pair**, one address is enough: both speakers form one system; if
+  both are typed, only one device is shown.
+- **By the search** (optional): use **Find the speakers**. Gladys browses the
+  network (mDNS, service `_devialet-http._tcp`) for the integration. A speaker
+  in standby, or a network that blocks multicast, may not answer: type the
+  address then. The search is never needed for the rest to work.
+
+The speaker appears in the integration's **Discovery** tab: create it.
 
 ## What you get
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+One Gladys device per Devialet **system** (one Phantom, or a stereo pair):
 
-## Configuration
+| Feature     | Detail                                                                   |
+| ----------- | ------------------------------------------------------------------------ |
+| Power       | Read only: 1 the speaker answers, 0 standby, off or unreachable          |
+| Standby     | Button: puts the system in standby                                       |
+| Volume      | 0 to 100, read and set (whole numbers only)                              |
+| Mute        | Button: each press reads the mute from the speaker and sets the opposite |
+| Play, Pause | Buttons                                                                  |
+| Next, Prev. | Buttons                                                                  |
+| Playback    | Read only: 1 playing, 0 paused                                           |
+| Source      | Dropdown, read and set: the sources this speaker has shown (AirPlay, …)  |
+| Now playing | Text: "Artist - Title", or "—" when nothing plays                        |
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+Volume and standby act on the **system**. Playback, mute and source act on the
+**group**: when several systems play together (grouped in the Devialet app),
+a command through any of them applies to the whole group.
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+The "Source" dropdown lists the sources the speaker announces (Spotify
+Connect, AirPlay, Bluetooth, UPnP, Roon Ready, optical…). On a stereo pair,
+the optical input of each speaker is shown with its side ("Optical left",
+"Optical right"). A source seen once stays in the list; selecting one that is
+not available at that moment is refused and nothing is sent.
 
-## Actions
+## Standby, and turning on
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+The IP control API **cannot wake a speaker up**: there is no "power on"
+command. That is why power is a read-only state and standby a button, not a
+switch: a "turn everything on" would have nothing to send. A speaker wakes up
+by itself when something plays to it (AirPlay, Spotify Connect…), or from the
+Devialet app or its touch surface.
 
-## Scenes
+A speaker in standby does not answer the network: it shows as **0** (standby,
+off or unreachable), the integration status names it, and it is asked again
+less and less often: after the refresh interval, then twice as long each time,
+5 minutes at most. As soon as it answers, it is read at the normal interval
+again. A speaker that accepts the connection and then says nothing is
+**unknown**: nothing is published, Gladys keeps the last known state.
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+Pressing **Standby** on a speaker that does not answer does nothing and is not
+an error (it already is in standby, or off the network).
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+## Commands
 
-## Dashboard
+Every command is answered to Gladys within 5 seconds. Commands to one speaker
+are sent one at a time; a command that cannot start in time is dropped, never
+sent late. A volume that is not a whole number from 0 to 100 (empty, 12.5,
+text…) is refused before anything is sent. When the speaker accepted a
+command but did not confirm it in time, Gladys shows "sent, without
+confirmation" and the state is read again two seconds later.
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+## Settings
 
-## Troubleshooting
+- **Refresh interval**: how often volume, mute, source and title are read, 5
+  to 300 seconds (10 by default).
+- **Check the speakers**: asks every known speaker now and says which ones
+  answer, with their volume.
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+## Privacy and security
+
+The integration only talks to the speakers, on your local network, in plain
+HTTP (the speakers offer nothing else). It keeps a list of the known speakers
+(serial number, address, name, sources) in its data folder (`/data`). There is
+no account and no password. The answers of the speakers are read with a size
+limit (64 KB), and only the expected fields are kept.
+
+## Limits
+
+- Local network only; the API is the one of the Devialet firmware, which may
+  change.
+- No "power on" (see above), no equalizer or night mode, no notification
+  playback in this first version.
+- Never tested with a real speaker so far.
+
+## Credits
+
+Logic ported to JavaScript from
+[devialet](https://github.com/fwestenberg/devialet) by fwestenberg (MIT
+license), the library behind the Home Assistant Devialet integration. Devialet
+and Phantom are trademarks of Devialet, used only to name the compatible
+products.

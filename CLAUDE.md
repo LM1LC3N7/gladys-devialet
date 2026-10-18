@@ -5,19 +5,23 @@ contributors.
 
 ## What this is
 
-A Gladys Assistant **external integration**: a Node.js service (Node 22+, ESM,
-no build step) that runs in its own sandboxed Docker container and talks to
-Gladys through
+A Gladys Assistant **external integration** for Devialet Phantom speakers,
+over their local IP control API: a Node.js service (Node 22+, ESM, no build
+step) that runs in its own sandboxed Docker container and talks to Gladys
+through
 [`@gladysassistant/integration-sdk`](https://github.com/GladysAssistant/integration-sdk-js),
-its only runtime dependency. It started from the official JavaScript template.
+its only runtime dependency. It started from the official JavaScript template;
+the speaker logic is ported from the `devialet` Python library (MIT, see
+`THIRD_PARTY_NOTICES.md`). Decisions are recorded in `TODO.md`.
 
 ## Commands
 
 ```bash
 npm install
 npm test                                  # node --test, the built-in runner
-node --test test/devices.test.js          # one file
-node --test --test-name-pattern "plug"    # tests whose name matches
+node --test test/app.test.js              # one file
+node --test --test-name-pattern "volume"  # tests whose name matches
+npm run cover                             # regenerates cover.png
 npm run lint                              # ESLint
 npm run format:check                      # Prettier, as the CI runs it
 npm run format                            # Prettier, fix in place
@@ -31,16 +35,19 @@ pushing.
 ## Architecture
 
 ```
-index.js                          SDK wiring only: handlers registered before connect()
-src/devices/index.js              registry of the device blueprints + dispatch helpers
-src/devices/<type>.js             one device type per file (buildDevice, onPoll, onSetValue...)
-src/scenes.js                     scene action handlers (manifest `scene_actions`)
-src/widgets.js                    dashboard widget handlers (manifest `widgets`)
+index.js                          SDK wiring only (src/handlers.js registers before connect())
+src/handlers.js                   every SDK handler -> DevialetApp (shared with the tests)
+src/app.js                        speakers, polling and backoff, commands, buttons, status
+src/devialet/client.js            IP control endpoints, parsing of the untrusted answers
+src/devialet/inputs.js            source names and stereo-pair optical inputs (pure)
+src/devialet/http.js              node:http, bounded time and size, error kinds
+src/model.js                      speakers -> Gladys devices and states (pure)
+src/store.js                      /data/devialet.json
+src/constants.js                  frozen keys, limits, timings
 src/config.js                     DEFAULT_CONFIG (mirrors the manifest defaults) + normalization
-src/weather.js                    example driver (Open-Meteo)
 gladys-assistant-integration.json manifest: name, config_schema, actions, image...
 docs/en.md, docs/fr.md            user documentation, re-hosted by Gladys (mandatory)
-test/                             node --test, against the SDK's fake Gladys (integration-sdk/testing)
+test/                             node --test, fake Gladys + fake speaker (test/fixtures/)
 .github/scripts/release.mjs       release helpers (manifest bump, changelog), tested in test/
 ```
 
