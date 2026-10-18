@@ -58,6 +58,15 @@ export const TIMINGS = Object.freeze({
   persistDelay: 1_000,
   /** mDNS listening time of a search. */
   scanSeconds: 5,
+  /**
+   * No answer of a search is asked after this (counted from its start, the
+   * mDNS listening included), `scanConcurrency` at a time: with the typed
+   * addresses asked after, a search ends well within the 60 s of its button.
+   */
+  scanBudget: 35_000,
+  scanConcurrency: 4,
+  /** While a created speaker has lost its address, an automatic search this often. */
+  autoScanInterval: 10 * 60_000,
   /** Speakers asked at once by "Check the speakers". */
   checkConcurrency: 4,
 });

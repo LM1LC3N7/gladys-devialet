@@ -21,13 +21,74 @@ import {
   sourceIdFor,
   sourceValues,
 } from '../src/devialet/inputs.js';
+import { createServer as createHttpServer } from 'node:http';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FileStore, MemoryStore } from '../src/store.js';
 import { DEVICE_ID, PARTNER_ID, SERIAL, startFakeSpeaker } from './fixtures/fakeSpeaker.js';
+
+const TRAPS = ['__proto__', 'constructor', 'prototype'];
+
+for (const trap of TRAPS) {
+  test(`a serial "${trap}" is refused, and no id is ever "${trap}"`, () => {
+    assert.throws(() => parseDevice({ serial: trap }), { kind: ERROR_KINDS.PROTOCOL });
+    const device = parseDevice({ serial: SERIAL, deviceId: trap, systemId: trap, role: trap });
+    assert.equal(device.deviceId, undefined);
+    assert.equal(device.systemId, undefined);
+    assert.equal(device.role, undefined);
+    assert.deepEqual(
+      parseSources({ sources: [{ sourceId: trap, deviceId: DEVICE_ID, type: 'upnp' }] }, 8),
+      [],
+    );
+  });
+
+  test(`a stored speaker "${trap}" is dropped, nothing reaches Object.prototype`, async (t) => {
+    const text = `{"speakers":{"${trap}":{"serial":"${trap}","polluted":true},"${SERIAL}":{"serial":"${SERIAL}"}}}`;
+    const dir = await mkdtemp(join(tmpdir(), 'devialet-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    await writeFile(join(dir, 'devialet.json'), text);
+    for (const store of [new FileStore({ dir }), new MemoryStore(JSON.parse(text))]) {
+      const data = await store.load();
+      assert.equal(Object.getPrototypeOf(data.speakers), null);
+      assert.deepEqual(Object.keys(data.speakers), [SERIAL]);
+      assert.equal({}.polluted, undefined);
+      assert.equal(typeof {}.constructor, 'function');
+    }
+  });
+}
+
+test('bidi marks, isolates and separators are removed from the texts', () => {
+  const hidden = [0x061c, 0x200e, 0x200f, 0x2028, 0x2029, 0x202a, 0x202e, 0x2066, 0x2069];
+  const text = `a${String.fromCodePoint(...hidden)}b`;
+  assert.equal(cleanText(text, 20), 'a b');
+  assert.equal(cleanText(String.fromCodePoint(0x200e, 0x2029), 20), undefined);
+});
+
+test('a 3xx answer is an HTTP error, the redirect is never followed', async (t) => {
+  let followed = 0;
+  const server = createHttpServer((req, res) => {
+    if (req.url === '/elsewhere') {
+      followed += 1;
+      res.end('{"volume":50}');
+      return;
+    }
+    res.writeHead(301, { Location: '/elsewhere' });
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const client = new DevialetClient({ host: '127.0.0.1', port: server.address().port });
+  await assert.rejects(client.volume(), { kind: ERROR_KINDS.HTTP, status: 301 });
+  await assert.rejects(client.play(), { kind: ERROR_KINDS.HTTP, status: 301 });
+  assert.equal(followed, 0);
+});
 
 test('parseDevice keeps the expected fields only', () => {
   const device = parseDevice({
     serial: SERIAL,
     deviceId: DEVICE_ID,
-    deviceName: 'Kitchen\u0000‮  speaker',
+    deviceName: `Kitchen${String.fromCodePoint(0, 0x202e)}  speaker`,
     isSystemLeader: 'yes',
     role: 'FrontLeft',
     model: 'x'.repeat(500),

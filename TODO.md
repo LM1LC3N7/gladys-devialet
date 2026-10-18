@@ -38,7 +38,13 @@ up to date at the end of every milestone.
     member), the `role` values of the Phantom II and of the Dialog / Arch;
   - the port and the TXT records of the mDNS service `_devialet-http._tcp`
     as relayed by Gladys;
-  - the mute endpoints when no source plays.
+  - the mute endpoints when no source plays;
+  - the rendering on the Gladys dashboard (not checked: no Gladys front
+    here): the `music` play/pause/next/previous buttons (min = max = 1, as
+    the core Sonos service), the `television/volume-mute` press with its
+    state, the `button/push` Standby, the `unknown/binary` power, the
+    `text/select` Source and the `text/text` title. Check that each shows as
+    a button or a state as intended, and what value each button sends.
 - [ ] **Milestone 3 — more**: equalizer and night mode (the library has
       them), volume up/down buttons, notifications through UPnP
       (`music/play_notification`, as the core Sonos service does), a
@@ -123,3 +129,36 @@ up to date at the end of every milestone.
 - Polling 5 s to 300 s (default 10 s), own timer (`should_poll: false`):
   only the created speakers; states through `publishChangedStates`.
 - Text features show "—" when nothing plays.
+
+### Review fixes (2026-10-18)
+
+- Prototype pollution: the speaker table (`data.speakers`) is
+  `Object.create(null)` in `emptyData` and `sanitize`; every read by serial
+  goes through `Object.hasOwn`; `__proto__`, `constructor` and `prototype` are
+  refused as serial and as any id (`isSafeId`, source ids too), from the
+  network and from `/data`.
+- Acks: the states a command implies are published in the background
+  (`publishPartial` not awaited in the queue task). A `mayHaveSent` flag is
+  set just before each command request (cleared when the connection was never
+  accepted); at the deadline, set means "Sent, without confirmation" plus a
+  re-read, unset means "nothing sent". The reads before a command (mute state,
+  source ids) never trigger a re-read and always mean "nothing sent".
+- Created devices: from `getDevices`, else from `gladys.devices` (the SDK's
+  list); while the last `getDevices` failed, it is called again at every
+  round.
+- Lost address: a created speaker without an address is polled without any
+  request (power 0) and named in the status ("address unknown, run Find the
+  speakers"); while one exists, a search runs by itself every 10 minutes, in
+  the background (the polling does not wait for it).
+- Searches: one at a time (a second request joins the running one), answers
+  identified 4 at a time, none started after 35 s from the start: with the
+  typed addresses after it, a search ends within the 60 s of the button.
+- Reads spaced out on HTTP, API and unreadable answers too (typed addresses
+  and speakers), like no answer, without publishing power 0.
+- Identity (`devices/current`) and system name read again with the source
+  list, every 10 minutes; a new name republishes the device.
+- Source options: merged with the `supported_options` of the created device
+  (`gladys.devices`) before every publication.
+- Unprintable characters are given as code point ranges (C0, DEL, C1,
+  U+061C, U+200E-U+200F, U+2028-U+202E, U+2066-U+2069), not as a regular
+  expression of invisible characters.

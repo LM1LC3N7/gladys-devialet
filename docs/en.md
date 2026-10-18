@@ -75,14 +75,24 @@ again. A speaker that accepts the connection and then says nothing is
 Pressing **Standby** on a speaker that does not answer does nothing and is not
 an error (it already is in standby, or off the network).
 
+## A speaker that changed address
+
+Each speaker is known by its serial number, not by its address. When another
+speaker answers at the address of a created one (the router gave it to
+another device), the integration never sends anything there: the speaker
+shows **0**, the status says "address unknown", and a search runs by itself
+every 10 minutes until it is found again. You can also use **Find the
+speakers**, or type its new address. A fixed address in the router avoids it.
+
 ## Commands
 
 Every command is answered to Gladys within 5 seconds. Commands to one speaker
 are sent one at a time; a command that cannot start in time is dropped, never
 sent late. A volume that is not a whole number from 0 to 100 (empty, 12.5,
-text…) is refused before anything is sent. When the speaker accepted a
-command but did not confirm it in time, Gladys shows "sent, without
-confirmation" and the state is read again two seconds later.
+text…) is refused before anything is sent. When a command may have reached
+the speaker but was not confirmed in time, Gladys shows "sent, without
+confirmation" and the state is read again two seconds later; "nothing sent"
+is only said when no command request left.
 
 ## Settings
 

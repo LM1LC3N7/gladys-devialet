@@ -84,15 +84,27 @@ n'est publié, Gladys garde le dernier état connu.
 Appuyer sur **Veille** pour une enceinte qui ne répond pas ne fait rien et
 n'est pas une erreur (elle est déjà en veille, ou hors du réseau).
 
+## Une enceinte qui a changé d'adresse
+
+Chaque enceinte est reconnue par son numéro de série, pas par son adresse.
+Quand une autre enceinte répond à l'adresse d'une enceinte créée (la box l'a
+donnée à un autre appareil), l'intégration n'y envoie jamais rien : l'enceinte
+est affichée à **0**, le statut indique « adresse inconnue », et une recherche
+se lance d'elle-même toutes les 10 minutes jusqu'à la retrouver. Vous pouvez
+aussi utiliser **Chercher les enceintes**, ou saisir sa nouvelle adresse. Une
+adresse fixe dans la box l'évite.
+
 ## Commandes
 
 Chaque commande reçoit sa réponse dans les 5 secondes qu'attend Gladys. Les
 commandes vers une même enceinte partent une à une ; une commande qui ne peut
 pas partir à temps est abandonnée, jamais envoyée en retard. Un volume qui
 n'est pas un nombre entier de 0 à 100 (vide, 12,5, texte…) est refusé avant
-tout envoi. Quand l'enceinte a reçu une commande sans la confirmer à temps,
-Gladys affiche « envoyée, sans confirmation » et l'état est relu deux
-secondes plus tard.
+tout envoi. Quand une commande a pu atteindre l'enceinte sans être confirmée
+à temps, Gladys affiche « Sent, without confirmation » (envoyée, sans
+confirmation ; ces messages sont en anglais) et l'état est relu deux
+secondes plus tard ; « nothing sent » (rien n'a été envoyé) n'est dit que si
+aucune requête de commande n'est partie.
 
 ## Réglages
 

@@ -15,7 +15,7 @@ import { isIP } from 'node:net';
 import { createLogger } from '@gladysassistant/integration-sdk';
 import { addressKey, normalizeConfig } from './config.js';
 import { DEFAULT_PORT, DEVICE_TYPE, FEATURES, LIMITS, TIMINGS } from './constants.js';
-import { DevialetClient } from './devialet/client.js';
+import { DevialetClient, isSafeId } from './devialet/client.js';
 import { ERROR_KINDS, SpeakerError, request as defaultRequest } from './devialet/http.js';
 import { INPUTS, currentSourceValue, sourceIdFor, sourceValues } from './devialet/inputs.js';
 import { T } from './i18n.js';
@@ -34,6 +34,12 @@ const TRANSPORT = new Map([
 
 /** Answers that say "this endpoint has nothing for you now", not "the speaker is broken". */
 const isSoftError = (err) => err?.kind === ERROR_KINDS.API || err?.kind === ERROR_KINDS.HTTP;
+
+/** Answers that would come back the same if asked again soon: spaced out like no answer. */
+const isSpacedError = (err) =>
+  err?.kind === ERROR_KINDS.HTTP ||
+  err?.kind === ERROR_KINDS.PROTOCOL ||
+  err?.kind === ERROR_KINDS.API;
 
 /**
  * The volume of a command, validated strictly: an integer 0..100 given as a
@@ -100,6 +106,11 @@ export class DevialetApp {
     this.queues = new Map();
     /** serials of the devices created in Gladys */
     this.created = new Set();
+    /** The last `getDevices` failed: asked again at every round until it works. */
+    this.createdStale = false;
+    /** The search in progress (one at a time), and when the last automatic one ran. */
+    this.scanning = undefined;
+    this.lastAutoScan = -Infinity;
     this.backgroundTimers = new Set();
     this.generation = 0;
     this.pollTimer = undefined;
@@ -180,7 +191,16 @@ export class DevialetApp {
     if (!this.data) {
       return Promise.resolve();
     }
-    return this.probeAddresses(false)
+    return Promise.resolve()
+      .then(() =>
+        this.createdStale
+          ? this.refreshCreated().catch((err) =>
+              this.logger.warn(`Could not read the Gladys devices: ${err.message}`),
+            )
+          : undefined,
+      )
+      .then(() => this.autoScan())
+      .then(() => this.probeAddresses(false))
       .then((changed) => (changed ? this.publishDevices() : undefined))
       .then(() => this.poll(false))
       .then(() => this.updateStatus())
@@ -252,11 +272,15 @@ export class DevialetApp {
     return force || this.now() >= record.nextAt - SLACK;
   }
 
-  /** Records an attempt: `ok` true, false (no answer) or undefined (unexpected answer). */
-  recordAttempt(key, ok) {
+  /**
+   * Records an attempt: `ok` true, false (no answer) or undefined (unexpected
+   * answer). `backoff`: an unexpected answer that is spaced out too (HTTP
+   * error, unreadable answer: asking again soon would get the same).
+   */
+  recordAttempt(key, ok, { backoff = false } = {}) {
     const record = this.attempts.get(key) ?? { count: 0 };
     record.last = this.now();
-    if (ok === false) {
+    if (ok === false || backoff) {
       record.count += 1;
       const backoff = Math.min(
         this.timings.maxBackoff,
@@ -300,8 +324,24 @@ export class DevialetApp {
     );
   }
 
+  /**
+   * The speakers created in Gladys. When `getDevices` fails, the list the SDK
+   * keeps (`gladys.devices`) is used, and the call is made again at every
+   * round until it works: a failed start never leaves the speakers unread.
+   */
   async refreshCreated() {
-    const devices = await this.gladys.getDevices();
+    let devices;
+    try {
+      devices = await this.gladys.getDevices();
+      this.createdStale = false;
+    } catch (err) {
+      this.createdStale = true;
+      if (!Array.isArray(this.gladys.devices)) {
+        throw err;
+      }
+      this.logger.warn(`Could not read the Gladys devices (${err.message}): using the last list`);
+      devices = this.gladys.devices;
+    }
     const bySerial = new Map(
       this.speakers.map((s) => [this.gladys.externalIds(DEVICE_TYPE, s.serial).device, s.serial]),
     );
@@ -361,7 +401,12 @@ export class DevialetApp {
 
   remember(description, address) {
     const speakers = this.data.speakers;
-    let speaker = speakers[description.serial];
+    if (!isSafeId(description.serial)) {
+      return undefined;
+    }
+    let speaker = Object.hasOwn(speakers, description.serial)
+      ? speakers[description.serial]
+      : undefined;
     if (!speaker) {
       if (Object.keys(speakers).length >= LIMITS.speakers) {
         this.warnOnce(
@@ -426,7 +471,9 @@ export class DevialetApp {
           this.recordAttempt(key, true);
           changed = changed || Boolean(speaker);
         } catch (err) {
-          this.recordAttempt(key, err.kind === ERROR_KINDS.UNREACHABLE ? false : undefined);
+          this.recordAttempt(key, err.kind === ERROR_KINDS.UNREACHABLE ? false : undefined, {
+            backoff: isSpacedError(err),
+          });
           this.logger.debug?.(`${addressKey(address)}: ${err.message}`);
         }
       }),
@@ -442,8 +489,23 @@ export class DevialetApp {
       .map(addressKey);
   }
 
-  /** The optional mDNS search through Gladys, then the typed addresses. */
-  async scan() {
+  /**
+   * The optional mDNS search through Gladys, then the typed addresses. One
+   * search at a time (a second request joins the running one); the answers
+   * are asked `scanConcurrency` at a time, none started after `scanBudget`,
+   * so the whole search ends within the 60 s of the "Find" button.
+   */
+  scan() {
+    if (!this.scanning) {
+      this.scanning = this.runScan().finally(() => {
+        this.scanning = undefined;
+      });
+    }
+    return this.scanning;
+  }
+
+  async runScan() {
+    const deadline = this.now() + this.timings.scanBudget;
     let results = [];
     try {
       results = await this.gladys.scanNetwork('mdns', {
@@ -454,6 +516,7 @@ export class DevialetApp {
       this.logger.warn(`mDNS search failed: ${err.message}`);
     }
     const seen = new Set();
+    const candidates = [];
     for (const result of (Array.isArray(results) ? results : []).slice(0, 50)) {
       const port =
         Number.isInteger(result?.port) && result.port > 0 && result.port < 65536
@@ -461,32 +524,84 @@ export class DevialetApp {
           : DEFAULT_PORT;
       const hosts = (Array.isArray(result?.addresses) ? result.addresses : [])
         .filter((h) => typeof h === 'string' && isIP(h) === 4)
+        .map((host) => ({ host, port }))
+        .filter((a) => !seen.has(addressKey(a)))
         .slice(0, 4);
-      for (const host of hosts) {
-        const key = `${host}:${port}`;
-        if (seen.has(key)) {
-          break;
-        }
-        seen.add(key);
-        try {
-          await this.identify({ host, port });
-          break;
-        } catch (err) {
-          this.logger.debug?.(`${key} is not a Devialet speaker: ${err.message}`);
-        }
+      hosts.forEach((a) => seen.add(addressKey(a)));
+      if (hosts.length > 0) {
+        candidates.push(hosts);
       }
     }
+    await mapLimit(candidates, this.timings.scanConcurrency, async (hosts) => {
+      for (const address of hosts) {
+        if (this.now() >= deadline) {
+          return;
+        }
+        try {
+          await this.identify(address);
+          return;
+        } catch (err) {
+          this.logger.debug?.(`${addressKey(address)} is not a Devialet speaker: ${err.message}`);
+        }
+      }
+    });
     await this.probeAddresses(true);
     await this.publishDevices();
     return this.publishedSpeakers();
+  }
+
+  /** The created speakers whose address is unknown (lost to another speaker). */
+  lostSpeakers() {
+    return this.speakers.filter((s) => this.created.has(s.serial) && !s.host);
+  }
+
+  /** While a created speaker has no address: a search every `autoScanInterval`. */
+  autoScan() {
+    if (this.lostSpeakers().length === 0) {
+      return;
+    }
+    if (this.now() - this.lastAutoScan < this.timings.autoScanInterval) {
+      return;
+    }
+    this.lastAutoScan = this.now();
+    // In the background: the polling of the other speakers does not wait for it.
+    this.scan()
+      .then(() => this.updateStatus())
+      .catch((err) => this.logger.warn(`Automatic search failed: ${err.message}`));
+  }
+
+  /**
+   * The source values of the device created in Gladys (`gladys.devices`, kept
+   * up to date by the SDK), merged into the speaker: options seen before a
+   * reset of /data are never dropped from the created device.
+   */
+  mergeCreatedOptions(speaker) {
+    const externalId = this.gladys.externalIds(DEVICE_TYPE, speaker.serial).device;
+    const device = (Array.isArray(this.gladys.devices) ? this.gladys.devices : []).find(
+      (d) => d?.external_id === externalId,
+    );
+    const feature = (Array.isArray(device?.features) ? device.features : []).find(
+      (f) => f?.external_id === `${externalId}:${FEATURES.SOURCE}`,
+    );
+    const options = Array.isArray(feature?.supported_options) ? feature.supported_options : [];
+    const values = options
+      .map((o) => o?.value)
+      .filter((v) => typeof v === 'string' && Object.hasOwn(INPUTS, v));
+    const merged = [...new Set([...(speaker.sourceValues ?? []), ...values])].sort();
+    if (JSON.stringify(merged) !== JSON.stringify(speaker.sourceValues ?? [])) {
+      speaker.sourceValues = merged;
+      this.persist();
+    }
   }
 
   async publishDevices() {
     if (!this.data) {
       return;
     }
+    const speakers = this.publishedSpeakers();
+    speakers.forEach((speaker) => this.mergeCreatedOptions(speaker));
     await this.gladys.publishDiscoveredDevices(
-      this.publishedSpeakers().map((speaker) => buildDevice(this.gladys, speaker)),
+      speakers.map((speaker) => buildDevice(this.gladys, speaker)),
     );
   }
 
@@ -496,7 +611,9 @@ export class DevialetApp {
     if (!this.polling) {
       this.polling = Promise.all(
         this.speakers
-          .filter((s) => this.created.has(s.serial) && s.host && this.isDue(s.serial, force))
+          // A created speaker without an address is "read" too: its power is
+          // published at 0 (no request is made).
+          .filter((s) => this.created.has(s.serial) && this.isDue(s.serial, force))
           .map((s) => this.readState(s)),
       ).finally(() => {
         this.polling = undefined;
@@ -564,7 +681,12 @@ export class DevialetApp {
       return { on: false };
     }
     try {
-      if (verify) {
+      // Who answers, and the system name, are read again with the source list
+      // (every `sourcesRefresh`): a renamed system or a re-paired speaker shows.
+      const cached = this.sourceLists.get(speaker.serial);
+      const identityDue =
+        verify || !cached || this.now() - cached.at >= this.timings.sourcesRefresh;
+      if (identityDue) {
         const description = await client.describe();
         if (description.serial !== speaker.serial) {
           this.logger.warn(
@@ -577,13 +699,17 @@ export class DevialetApp {
           this.remember({ ...description }, address);
           return { on: false };
         }
+        const systemName = await this.optional(() => client.systemName());
+        const before = deviceName(speaker);
         this.remember(
-          { ...description, systemName: speaker.systemName },
-          {
-            host: speaker.host,
-            port: speaker.port,
-          },
+          { ...description, systemName: systemName ?? speaker.systemName },
+          { host: speaker.host, port: speaker.port },
         );
+        if (deviceName(speaker) !== before) {
+          await this.publishDevices().catch((err) =>
+            this.logger.warn(`Could not publish the devices: ${err.message}`),
+          );
+        }
       }
       const playback = await this.optional(() => client.playback());
       const sources = await this.sourceList(speaker, client);
@@ -600,14 +726,16 @@ export class DevialetApp {
         return { on: false };
       }
       this.warnOnce(`read:${speaker.serial}`, `${deviceName(speaker)}: ${err.message}`);
-      return { on: undefined };
+      return { on: undefined, spaced: isSpacedError(err) };
     }
   }
 
   async readState(speaker) {
     const wasOn = this.readings.get(speaker.serial)?.on;
     const reading = await this.read(speaker, { verify: wasOn !== true });
-    const record = this.recordAttempt(speaker.serial, reading.on);
+    const record = this.recordAttempt(speaker.serial, reading.on, {
+      backoff: reading.spaced === true,
+    });
     if (reading.on === false && record.count === 1) {
       this.logger.info(`${deviceName(speaker)} does not answer (standby, off or unreachable)`);
     }
@@ -677,13 +805,16 @@ export class DevialetApp {
     // The budget runs from the request of Gladys, the wait in the queue included.
     const started = this.now();
     let late = false;
+    // Set just before a command request leaves: from then on, the command may
+    // have reached the speaker, whatever happens next.
+    const context = { mayHaveSent: false };
     const run = this.enqueue(speaker.serial, async () => {
       if (late || this.remaining(started) < 50) {
         // Gladys stopped waiting while this command was queued: dropped, never sent late.
         late = true;
         throw new SpeakerError(ERROR_KINDS.BUDGET, 'No time left for this command, nothing sent');
       }
-      return this.command(speaker, key, checked, started);
+      return this.command(speaker, key, checked, started, context);
     });
     // Wall-clock deadline (not the injectable timers): the ack Gladys waits for.
     let timer;
@@ -691,8 +822,20 @@ export class DevialetApp {
       timer = setTimeout(
         () => {
           late = true;
+          if (context.mayHaveSent) {
+            this.recheck(speaker);
+            reject(
+              new SpeakerError(ERROR_KINDS.TIMEOUT, 'Sent, without confirmation from the speaker', {
+                sent: true,
+              }),
+            );
+            return;
+          }
           reject(
-            new SpeakerError(ERROR_KINDS.BUDGET, 'No time left for this command (speaker busy)'),
+            new SpeakerError(
+              ERROR_KINDS.BUDGET,
+              'No time left for this command (speaker busy), nothing sent',
+            ),
           );
         },
         Math.max(0, this.remaining(started)) + 100,
@@ -715,7 +858,10 @@ export class DevialetApp {
    * (connected, then silent) is never reported as "not sent": "sent, without
    * confirmation", and the state is read again shortly after.
    */
-  async send(speaker, task) {
+  async send(speaker, task, context) {
+    if (context) {
+      context.mayHaveSent = true;
+    }
     try {
       return await task();
     } catch (err) {
@@ -725,56 +871,87 @@ export class DevialetApp {
           sent: true,
         });
       }
-      if (err.kind === ERROR_KINDS.UNREACHABLE) {
+      if (err.kind === ERROR_KINDS.UNREACHABLE || err.kind === ERROR_KINDS.BUDGET) {
+        // The connection was never accepted (or never opened): nothing left.
+        if (context) {
+          context.mayHaveSent = false;
+        }
         throw new SpeakerError(
-          ERROR_KINDS.UNREACHABLE,
-          `${deviceName(speaker)} does not answer (standby, off or unreachable): nothing sent`,
+          err.kind,
+          err.kind === ERROR_KINDS.BUDGET
+            ? 'No time left for this command, nothing sent'
+            : `${deviceName(speaker)} does not answer (standby, off or unreachable): nothing sent`,
         );
       }
       throw err;
     }
   }
 
-  async command(speaker, key, value, started) {
+  /**
+   * A read made before a command request (mute state, source ids): whatever
+   * goes wrong, nothing was sent, and no recheck is needed.
+   */
+  async readBefore(speaker, what, task) {
+    try {
+      return await task();
+    } catch (err) {
+      if (err.kind === ERROR_KINDS.UNREACHABLE) {
+        throw new SpeakerError(
+          ERROR_KINDS.UNREACHABLE,
+          `${deviceName(speaker)} does not answer (standby, off or unreachable): nothing sent`,
+        );
+      }
+      if (err.kind === ERROR_KINDS.TIMEOUT || err.kind === ERROR_KINDS.BUDGET) {
+        throw new SpeakerError(err.kind, `${what} not read in time: nothing sent`);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Runs one command. The states it implies are published in the background
+   * (never awaited here): a slow Gladys never turns a command the speaker
+   * accepted into a failed ack.
+   */
+  async command(speaker, key, value, started, context = { mayHaveSent: false }) {
     if (!speaker.host) {
       throw new SpeakerError(
         ERROR_KINDS.UNREACHABLE,
-        `${deviceName(speaker)}: address unknown, run a search`,
+        `${deviceName(speaker)}: address unknown, run "Find the speakers"`,
       );
     }
     const client = () => this.client(speaker).withBudget(this.remaining(started));
+    const publish = (partial) => {
+      this.publishPartial(speaker, partial).catch(() => {});
+    };
     if (key === FEATURES.VOLUME) {
-      await this.send(speaker, () => client().setVolume(value));
-      return this.publishPartial(speaker, { volume: value });
+      await this.send(speaker, () => client().setVolume(value), context);
+      publish({ volume: value });
+      return undefined;
     }
     if (key === FEATURES.MUTE) {
       // Gladys sends a press, not a target: the mute is read from the speaker
       // just before, and the opposite is set (two explicit endpoints, no toggle).
       const budget = Math.min(this.timings.preRead, this.remaining(started));
-      const playback = await this.send(speaker, () =>
+      const playback = await this.readBefore(speaker, 'Mute state', () =>
         this.client(speaker).withBudget(budget).playback(),
-      ).catch((err) => {
-        if (err.sent) {
-          // Only a read timed out: nothing was sent.
-          throw new SpeakerError(ERROR_KINDS.TIMEOUT, 'Mute state not read in time: nothing sent');
-        }
-        throw err;
-      });
+      );
       if (typeof playback.muted !== 'boolean') {
         throw new Error(`${deviceName(speaker)}: mute state unknown, nothing sent`);
       }
       const muted = !playback.muted;
-      await this.send(speaker, () => client().setMute(muted));
-      return this.publishPartial(speaker, { playback: { ...playback, muted } });
+      await this.send(speaker, () => client().setMute(muted), context);
+      publish({ playback: { ...playback, muted } });
+      return undefined;
     }
     if (TRANSPORT.has(key)) {
-      await this.send(speaker, () => client()[TRANSPORT.get(key)]());
+      await this.send(speaker, () => client()[TRANSPORT.get(key)](), context);
       this.recheck(speaker);
       return undefined;
     }
     if (key === FEATURES.STANDBY) {
       try {
-        await this.send(speaker, () => client().powerOff());
+        await this.send(speaker, () => client().powerOff(), context);
       } catch (err) {
         if (err.kind !== ERROR_KINDS.UNREACHABLE) {
           throw err;
@@ -788,12 +965,7 @@ export class DevialetApp {
     }
     if (key === FEATURES.SOURCE) {
       // Source ids are read again: they belong to the speaker, not to Gladys.
-      const list = await this.send(speaker, () => client().sources()).catch((err) => {
-        if (err.sent) {
-          throw new SpeakerError(ERROR_KINDS.TIMEOUT, 'Source list not read in time: nothing sent');
-        }
-        throw err;
-      });
+      const list = await this.readBefore(speaker, 'Source list', () => client().sources());
       this.sourceLists.set(speaker.serial, { list, at: this.now() });
       const sourceId = sourceIdFor(value, list, speaker);
       if (!sourceId) {
@@ -801,8 +973,8 @@ export class DevialetApp {
           `${deviceName(speaker)}: source "${value}" not available now, nothing sent`,
         );
       }
-      await this.send(speaker, () => client().playSource(sourceId));
-      await this.publishPartial(speaker, { source: value });
+      await this.send(speaker, () => client().playSource(sourceId), context);
+      publish({ source: value });
       this.recheck(speaker);
       return undefined;
     }
@@ -867,8 +1039,14 @@ export class DevialetApp {
     if (silent.length > 0) {
       notes.push(T.noAnswerAt(silent));
     }
+    const lost = this.lostSpeakers();
+    if (lost.length > 0) {
+      notes.push(T.addressUnknown(lost.map(deviceName)));
+    }
     const off = this.speakers
-      .filter((s) => this.created.has(s.serial) && this.readings.get(s.serial)?.on === false)
+      .filter(
+        (s) => this.created.has(s.serial) && s.host && this.readings.get(s.serial)?.on === false,
+      )
       .map(deviceName);
     if (off.length > 0) {
       notes.push(T.unreachable(off));

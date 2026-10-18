@@ -31,26 +31,43 @@ export const PATHS = Object.freeze({
     `${BASE}/groups/current/sources/${encodeURIComponent(sourceId)}/playback/play`,
 });
 
-// Control characters (C0, DEL, C1) and the bidirectional overrides are
-// removed from what is shown in Gladys.
-// eslint-disable-next-line no-control-regex
-const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+// Control characters (C0, DEL, C1), the bidirectional marks, embeddings,
+// overrides and isolates (U+061C, U+200E, U+200F, U+202A-U+202E,
+// U+2066-U+2069) and the line/paragraph separators (U+2028, U+2029) are
+// removed from what is shown in Gladys. Written as code point ranges on
+// purpose: the characters themselves are invisible in an editor.
+const UNPRINTABLE = [
+  [0x0000, 0x001f],
+  [0x007f, 0x009f],
+  [0x061c, 0x061c],
+  [0x200e, 0x200f],
+  [0x2028, 0x202e],
+  [0x2066, 0x2069],
+];
+const isUnprintable = (char) => {
+  const code = char.codePointAt(0);
+  return UNPRINTABLE.some(([from, to]) => code >= from && code <= to);
+};
 
 /** A printable string of at most `max` characters, or undefined. */
 export function cleanText(value, max) {
   if (typeof value !== 'string') {
     return undefined;
   }
-  const text = value
-    .slice(0, max * 4)
-    .replace(UNPRINTABLE, ' ')
+  const text = [...value.slice(0, max * 4)]
+    .map((char) => (isUnprintable(char) ? ' ' : char))
+    .join('')
     .replace(/\s+/g, ' ')
     .trim();
   return text === '' ? undefined : [...text].slice(0, max).join('');
 }
 
 const SAFE_ID = /^[A-Za-z0-9._:-]{1,64}$/;
-const safeId = (value) => (typeof value === 'string' && SAFE_ID.test(value) ? value : undefined);
+/** Names that would reach Object.prototype when used as a key: never an id. */
+export const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+export const isSafeId = (value) =>
+  typeof value === 'string' && SAFE_ID.test(value) && !RESERVED_KEYS.has(value);
+const safeId = (value) => (isSafeId(value) ? value : undefined);
 const SAFE_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /** `GET devices/current` -> who the speaker is. Throws without a usable serial number. */

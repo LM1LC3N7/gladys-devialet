@@ -3,19 +3,31 @@
 // volume, file mode 0600): the known speakers by serial number, their address,
 // who they are (system, role), and the source values they have shown (the
 // "Source" dropdown only grows). No secret: the IP control API has none.
+//
+// The serial numbers come from the network: the speaker table has no
+// prototype, and a serial that is not a plain identifier (`__proto__`,
+// `constructor`...) is never a key.
 // -----------------------------------------------------------------------------
 
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isSafeId } from './devialet/client.js';
 
-export const emptyData = () => ({ speakers: {} });
+export const emptyData = () => ({ speakers: Object.create(null) });
 
 function sanitize(data) {
   const base = emptyData();
   if (data && typeof data === 'object' && data.speakers && typeof data.speakers === 'object') {
     for (const [serial, speaker] of Object.entries(data.speakers)) {
-      if (speaker && typeof speaker === 'object' && speaker.serial === serial) {
-        base.speakers[serial] = speaker;
+      if (
+        isSafeId(serial) &&
+        speaker &&
+        typeof speaker === 'object' &&
+        !Array.isArray(speaker) &&
+        speaker.serial === serial
+      ) {
+        // A plain copy of the own fields only.
+        base.speakers[serial] = Object.fromEntries(Object.entries(speaker));
       }
     }
   }
@@ -63,17 +75,18 @@ export class FileStore {
 /** For the tests. */
 export class MemoryStore {
   constructor(data = emptyData()) {
-    this.data = structuredClone(data);
+    this.data = JSON.parse(JSON.stringify(data));
     this.saves = 0;
     this.corrupted = false;
   }
 
   async load() {
-    return sanitize(structuredClone(this.data));
+    return sanitize(JSON.parse(JSON.stringify(this.data)));
   }
 
   async save(data) {
-    this.data = structuredClone(data);
+    // Through JSON, as the file store: what a restart would read back.
+    this.data = JSON.parse(JSON.stringify(data));
     this.saves += 1;
   }
 }

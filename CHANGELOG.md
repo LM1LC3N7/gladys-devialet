@@ -26,3 +26,26 @@ the notes of the version's GitHub Release.
   at most). Answers are read with a 64 KB limit and only the expected fields
   are kept.
 - "Find the speakers" and "Check the speakers" buttons.
+- A created speaker whose address went to another speaker shows its power at
+  0, is named in the status ("address unknown, run Find the speakers"), and a
+  search runs by itself every 10 minutes until it is found again.
+
+### Fixed
+
+- A command the speaker accepted is no longer reported as failed when Gladys
+  is slow to take the states; a command whose request may have left is
+  answered "sent, without confirmation" at the deadline, "nothing sent" only
+  when no request left, and no needless re-read after a pre-read timeout.
+- The speakers are still read when the list of the Gladys devices cannot be
+  fetched at start (the SDK's list is used, the fetch is retried every round).
+- Answers that are HTTP errors or unreadable are asked again at spaced
+  intervals; the identity and the system name are read again every 10
+  minutes; the Source options of a created device are never dropped.
+- One search at a time, its answers asked 4 at a time within 35 seconds.
+
+### Security
+
+- A serial number or an id `__proto__`, `constructor` or `prototype` from the
+  network or from `/data` is refused: the speaker table has no prototype.
+- More invisible characters are removed from the texts (bidi marks U+200E,
+  U+200F, U+061C, and the separators U+2028, U+2029).

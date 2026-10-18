@@ -29,7 +29,7 @@ export const INPUTS = Object.freeze({
 export const SPEAKER_POSITIONS = Object.freeze({ FrontLeft: 'left', FrontRight: 'right' });
 
 const OPTICAL = new Set(['optical', 'opticaljack']);
-const SAFE_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+const SAFE_ID = /^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9._:-]{1,64}$/;
 const SAFE_TYPE = /^[a-z0-9_]{1,32}$/;
 
 const str = (value) => (typeof value === 'string' ? value : undefined);

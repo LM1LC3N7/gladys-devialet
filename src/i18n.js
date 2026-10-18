@@ -43,6 +43,11 @@ export const T = {
       `Not answering (standby, off or unreachable), asked again at spaced intervals: ${list(names)}.`,
       `Ne répondent pas (veille, éteintes ou injoignables), redemandées à intervalles espacés : ${list(names)}.`,
     ),
+  addressUnknown: (names) =>
+    both(
+      `Address unknown (another speaker answers at the old one): ${list(names)}. Run "Find the speakers" or type the new address; a search also runs by itself every 10 minutes.`,
+      `Adresse inconnue (une autre enceinte répond à l'ancienne) : ${list(names)}. Lancez « Chercher les enceintes » ou saisissez la nouvelle adresse ; une recherche se lance aussi d'elle-même toutes les 10 minutes.`,
+    ),
   noAnswerAt: (addresses) =>
     both(
       `No Devialet speaker answers yet at: ${list(addresses)}.`,
