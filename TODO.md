@@ -167,3 +167,7 @@ up to date at the end of every milestone.
 - Unprintable characters are given as code point ranges (C0, DEL, C1,
   U+061C, U+200E-U+200F, U+2028-U+202E, U+2066-U+2069), not as a regular
   expression of invisible characters.
+
+## Next patch
+
+- Migration review w11 r1 minors (`_lots/migration-reviews/w11-gladys-devialet-r1.md`): the README `npm test` line omits `--test-timeout=60000`.
