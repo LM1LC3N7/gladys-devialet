@@ -8,6 +8,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { ACTIONS, MDNS_SERVICE, POLL_INTERVAL } from '../src/constants.js';
+import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
+import { INPUTS } from '../src/devialet/inputs.js';
+import { FEATURE_SPECS, buildDevice } from '../src/model.js';
+import { assertCoreDevice } from './helpers/coreFeature.js';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const manifest = JSON.parse(read('gladys-assistant-integration.json'));
@@ -112,4 +116,24 @@ test('the actions are the ones the code handles', () => {
   assert.equal(manifest.scene_actions, undefined);
   assert.equal(manifest.scene_triggers, undefined);
   assert.equal(manifest.widgets, undefined);
+});
+
+test('every feature has a numeric min and max and the other core fields', () => {
+  const gladys = createFakeGladys({ selector: 'devialet' });
+  const speakers = [
+    { serial: 'P1', host: '192.168.1.20', sourceValues: Object.keys(INPUTS), model: 'Phantom I' },
+    { serial: 'P2', sourceValues: ['upnp', 'not-a-source'] },
+  ];
+  let features = 0;
+  for (const speaker of speakers) {
+    features += assertCoreDevice(buildDevice(gladys, speaker), speaker.serial);
+  }
+  assert.equal(features, 2 * Object.keys(FEATURE_SPECS).length);
+  // A speaker whose sources are not known yet: an empty list of options,
+  // which Gladys accepts (it syncs the options to none).
+  const first = buildDevice(gladys, { serial: 'P3', sourceValues: [] });
+  for (const f of first.features) {
+    if (f.supported_options?.length === 0) delete f.supported_options;
+  }
+  assertCoreDevice(first, 'P3');
 });
